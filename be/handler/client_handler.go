@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	models "ASI/model"
+	"ASI/utils"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -8,10 +10,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/go-redis/redis/v8"
-	"github.com/your_project/models"
-	"github.com/your_project/utils"
-	"gorm.io/gorm"
+	"github.com/redis/go-redis/v9"
 )
 
 type ClientHandler struct {
@@ -39,13 +38,14 @@ func (h *ClientHandler) CreateClient(c *gin.Context) {
 		input.ClientLogo = "/uploads/no-image.jpg"
 	}
 
-	input.Slug = utils.GenerateSlug(input.Name)
+	input.Slug = utils.UploadPath
 	input.CreatedAt = time.Now()
 
 	h.DB.Create(&input)
 
 	clientJSON, _ := json.Marshal(input)
-	h.Redis.Set(context.Background(), fmt.Sprintf("client:%s", input.Slug), clientJSON, time.Hour)
+	ctx := context.Background()
+	h.Redis.Set(ctx, fmt.Sprintf("client:%s", input.Slug), clientJSON, time.Hour)
 
 	c.JSON(http.StatusCreated, input)
 }
