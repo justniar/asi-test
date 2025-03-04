@@ -1,7 +1,6 @@
-package handler
+package handlers
 
 import (
-	models "ASI/model"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -9,63 +8,127 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/redis/go-redis/v9"
+	"github.com/go-redis/redis/v8"
+	"github.com/your_project/models"
+	"github.com/your_project/utils"
+	"gorm.io/gorm"
 )
-
-var ctx = context.Background()
 
 type ClientHandler struct {
 	DB    *gorm.DB
 	Redis *redis.Client
 }
 
-func (h *ClientHandler) GetClients(c *gin.context) {
-	var clients []models.Client
-	h.DB.where("deleted_at IS NULL").Find(&clients)
-	c.JSON(http.StatusOk, clients)
-}
-
-func (h *ClientHandler) GetClient(c *gin.context) {
-	slug := c.Param("slug")
-	cacheKey := fmt.Sprintf("client:%s", slug)
-
-	cachedClient, err := h.Redis.Get(ctx, cacheKey).Result()
-	if err == nil {
-		var client models.Client
-		json.Unmarshall([]byte(cachedClient), &client)
-		c.JSON(http.StatusOK, client)
-		return
-	}
-
-	var client models.Client
-	if err := h.DB.where("slug = ? AND deleted_at is null", slug).first(&client).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"message: client not found"})
-		return
-	}
-
-	clientJSON, _ := json.Marshal(client)
-	h.Redis.Set(ctx, cacheKey, clientJSON, time.Hour)
-	c.JSON(http.StatusOK, client)
-}
-
 func (h *ClientHandler) CreateClient(c *gin.Context) {
 	var input models.Client
-	if err := c.ShouldBindJSON(&input); err != nil {
+
+	if err := c.ShouldBind(&input); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	input.Slug = utils.GeneratedSlug(input.Name)
+	file, header, err := c.Request.FormFile("client_logo")
+	if err == nil {
+		filePath, err := utils.SaveFile(file, header.Filename)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal menyimpan file"})
+			return
+		}
+		input.ClientLogo = filePath
+	} else {
+		input.ClientLogo = "/uploads/no-image.jpg"
+	}
+
+	input.Slug = utils.GenerateSlug(input.Name)
 	input.CreatedAt = time.Now()
 
 	h.DB.Create(&input)
 
 	clientJSON, _ := json.Marshal(input)
-	h.Redis.Set(ctx, fmt.Sprintf("client:%s", input.Slug), clientJSON, time.Hour)
+	h.Redis.Set(context.Background(), fmt.Sprintf("client:%s", input.Slug), clientJSON, time.Hour)
 
 	c.JSON(http.StatusCreated, input)
 }
 
 func (h *ClientHandler) UpdateClient(c *gin.Context) {
+	slug := c.Param("slug")
+	var client models.Client
 
+	if err := h.DB.Where("slug = ?", slug).First(&client).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"message": "Client not found"})
+		return
+	}
+
+	var input models.Client
+	if err := c.ShouldBind(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	file, header, err := c.Request.FormFile("client_logo")
+	if err == nil {
+		filePath, err := utils.SaveFile(file, header.Filename)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal menyimpan file"})
+			return
+		}
+		client.ClientLogo = filePath
+	}
+
+	client.Name = input.Name
+	client.Address = input.Address
+	client.PhoneNumber = input.PhoneNumber
+	client.City = input.City
+	client.UpdatedAt = time.Now()
+
+	h.DB.Save(&client)
+
+	h.Redis.Del(context.Background(), fmt.Sprintf("client:%s", slug))
+
+	clientJSON, _ := json.Marshal(client)
+	h.Redis.Set(context.Background(), fmt.Sprintf("client:%s", slug), clientJSON, time.Hour)
+
+	c.JSON(http.StatusOK, client)
+}
+
+func (h *ClientHandler) GetClient(c *gin.Context) {
+	slug := c.Param("slug")
+	cacheKey := fmt.Sprintf("client:%s", slug)
+
+	cachedClient, err := h.Redis.Get(context.Background(), cacheKey).Result()
+	if err == nil {
+		var client models.Client
+		json.Unmarshal([]byte(cachedClient), &client)
+		c.JSON(http.StatusOK, client)
+		return
+	}
+
+	var client models.Client
+	if err := h.DB.Where("slug = ? AND deleted_at IS NULL", slug).First(&client).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"message": "Client not found"})
+		return
+	}
+
+	clientJSON, _ := json.Marshal(client)
+	h.Redis.Set(context.Background(), cacheKey, clientJSON, time.Hour)
+
+	c.JSON(http.StatusOK, client)
+}
+
+func (h *ClientHandler) DeleteClient(c *gin.Context) {
+	slug := c.Param("slug")
+	var client models.Client
+
+	if err := h.DB.Where("slug = ?", slug).First(&client).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"message": "Client not found"})
+		return
+	}
+
+	now := time.Now()
+	client.DeletedAt = &now
+	h.DB.Save(&client)
+
+	h.Redis.Del(context.Background(), fmt.Sprintf("client:%s", slug))
+
+	c.JSON(http.StatusOK, gin.H{"message": "Client deleted"})
 }
